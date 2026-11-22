@@ -9,16 +9,15 @@
 	<!-- Метаданные приложения (появятся в свойствах .exe файла) -->
 	<Title>NetTracker</Title>
 	<Authors>Alexander Belkin (frolbel)</Authors>
-	<Company>Frolbel Open Source</Company>
 	<Description>Real-time network activity monitor for specific Windows processes using ETW.</Description>
 	<Copyright>Copyright © 2026 Alexander Belkin (frolbel). All rights reserved.</Copyright>
 	<PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/frolbel/NetTracker</RepositoryUrl>
 
 	<!-- Версия приложения -->
-	<Version>1.1.0</Version>
-	<FileVersion>1.1.0</FileVersion>
-	<AssemblyVersion>1.1.0</AssemblyVersion>
+	<Version>1.1.1</Version>
+	<FileVersion>1.1.1</FileVersion>
+	<AssemblyVersion>1.1.1</AssemblyVersion>
 	  
   </PropertyGroup>
 
