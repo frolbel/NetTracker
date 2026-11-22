@@ -7,7 +7,7 @@ namespace NetTracker
 {
     internal class Program
     {
-        private const string SessionName = "Frolbel.NetTracker.Session";
+        private const string SessionName = "frolbel.NetTracker.Session";
 
         // Словарь для хранения связок: [IP-адрес] -> [Настоящее DNS имя]
         static ConcurrentDictionary<string, string> IpToDomainMap = new();
