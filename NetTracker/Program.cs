@@ -7,6 +7,8 @@ namespace NetTracker
 {
     internal class Program
     {
+        private const string SessionName = "Frolbel.NetTracker.Session";
+
         // Словарь для хранения связок: [IP-адрес] -> [Настоящее DNS имя]
         static ConcurrentDictionary<string, string> IpToDomainMap = new();
 
@@ -16,6 +18,17 @@ namespace NetTracker
             {
                 Console.WriteLine("Ошибка: Пожалуйста, запустите консоль от имени Администратора.");
                 return;
+            }
+
+            // Очистка старых сессий, если они остались
+            var activeSessions = TraceEventSession.GetActiveSessionNames();    
+            foreach (var name in activeSessions)    
+            {        
+                if (name == SessionName)        
+                {            
+                    var session = TraceEventSession.GetActiveSession(name);
+                    session?.Dispose();        
+                }    
             }
 
             Console.Write("Введите имя процесса для отслеживания (например, telegram или chrome): ");
