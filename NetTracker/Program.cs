@@ -31,18 +31,43 @@ namespace NetTracker
                 }    
             }
 
-            Console.Write("Введите имя процесса для отслеживания (например, telegram или chrome): ");
-            var targetProcess = Console.ReadLine()?.Trim().ToLower();
-
-            if (string.IsNullOrEmpty(targetProcess))
+            var input = "";
+            if (args.Length > 0)
             {
-                Console.WriteLine("Имя процесса не может быть пустым.");
-                return;
+                // Соединяем все аргументы в одну строку
+                input = string.Join(" ", args);        
+            }        
+            else        
+            {            
+                Console.Write("Введите имена процессов (через пробел или запятую, например: telegram chrome): ");
+                input = Console.ReadLine()?.Trim();
+            } 
+            
+            if (string.IsNullOrWhiteSpace(input)) 
+            { 
+                Console.WriteLine("Имя процесса не может быть пустым. Нажмите любую клавишу для выхода..."); 
+                Console.ReadKey(true); 
+                return; 
+            }
+
+            // Разбиваем строку на массив имен, убираем .exe и переводим в нижний регистр
+            var targetProcessNames = new HashSet<string>(
+                input.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries)
+                .Select(p => p.ToLower().Replace(".exe", ""))        
+            );
+
+            if (targetProcessNames.Count == 0) 
+            { 
+                Console.WriteLine("Не удалось распознать имена процессов. Нажмите любую клавишу для выхода..."); 
+                Console.ReadKey(true); 
+                return; 
             }
 
             var uniqueIPs = new HashSet<string>();
 
-            Console.WriteLine($"\nОжидание сетевой активности от '{targetProcess}'...");
+            var processNamesDisplay = string.Join(", ", targetProcessNames);
+            Console.WriteLine($"\nОжидание сетевой активности от: {processNamesDisplay}...");
+            
             Console.WriteLine("Нажмите Ctrl+C для завершения...\n");
             Console.WriteLine($"{"Время",-10} | {"IP-адрес",-15} | {"Порт",-5} | DNS-имя (Домен)");
             Console.WriteLine(new string('-', 65));
@@ -82,25 +107,27 @@ namespace NetTracker
                 // Обработчик TCP-подключений
                 session.Source.Kernel.TcpIpConnect += (data) =>
                 {
-                    var processName = data.ProcessName.ToLower();
+                    var processName = data.ProcessName;
 
-                    if (processName.Contains(targetProcess))
+                    if (string.IsNullOrEmpty(processName) || !targetProcessNames.Contains(processName.ToLower()))
                     {
-                        var ipAddress = data.daddr.ToString();
+                        return;
+                    }
 
-                        if (uniqueIPs.Add(ipAddress))
+                    var ipAddress = data.daddr.ToString();
+
+                    if (uniqueIPs.Add(ipAddress))
+                    {
+                        var domainName = "Неизвестный домен (прямой IP)";
+                        if (IpToDomainMap.TryGetValue(ipAddress, out string? mappedDomain))
                         {
-                            var domainName = "Неизвестный домен (прямой IP)";
-                            if (IpToDomainMap.TryGetValue(ipAddress, out string? mappedDomain))
+                            if (!string.IsNullOrEmpty(mappedDomain))
                             {
-                                if (!string.IsNullOrEmpty(mappedDomain))
-                                {
-                                    domainName = mappedDomain;
-                                }
+                                domainName = mappedDomain;
                             }
-
-                            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] | {ipAddress,-15} | {data.dport,-5} | {domainName}");
                         }
+
+                        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] | {ipAddress,-15} | {data.dport,-5} | {domainName}");
                     }
                 };
 
