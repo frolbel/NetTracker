@@ -15,9 +15,9 @@
     <RepositoryUrl>https://github.com/frolbel/NetTracker</RepositoryUrl>
 
 	<!-- Версия приложения -->
-	<Version>1.1.2</Version>
-	<FileVersion>1.1.2</FileVersion>
-	<AssemblyVersion>1.1.2</AssemblyVersion>
+	<Version>1.2.0</Version>
+	<FileVersion>1.2.0</FileVersion>
+	<AssemblyVersion>1.2.0</AssemblyVersion>
 
 	<ApplicationManifest>app.manifest</ApplicationManifest>
   
