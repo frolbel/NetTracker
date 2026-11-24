@@ -144,7 +144,7 @@ namespace NetTracker
             Console.WriteLine("\nСбор данных завершен.");
 
             // Добавляем паузу перед закрытием окна
-            Console.WriteLine("Нажмите любую клавишу, чтобы выйти..."); Console.ReadKey(true);
+            ConsoleHelper.WaitForKeysBeforeExit();
         }
     }
 }
