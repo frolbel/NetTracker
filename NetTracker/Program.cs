@@ -1,4 +1,5 @@
 ﻿using Microsoft.Diagnostics.Tracing.Session;
+using System.Diagnostics;
 
 namespace NetTracker
 {
@@ -8,22 +9,62 @@ namespace NetTracker
         /// Точка входа.
         /// </summary>
         /// <param name="args">Аргументы запуска.</param>
-        static void Main(string[] args)
+        static int Main(string[] args)
         {
+            // Список аргументов без нашего служебного флага
+            var filteredArgs = args.Where(arg => arg != "--elevate" && arg != "-e").ToArray();
+            bool forceElevate = args.Length != filteredArgs.Length;
+
             // 1. Проверка прав
             if (!TraceEventSession.IsElevated() ?? false)
             {
-                Console.WriteLine("Пожалуйста, запустите программу от имени администратора.");
-                ConsoleHelper.WaitForKeysBeforeExit();
-                return;
+                // Если запуск из оболочки И НЕ задан флаг принудительного повышения
+                if (ConsoleHelper.IsLaunchedFromShell() && !forceElevate)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Error.WriteLine("Ошибка: Для работы NetTracker требуются права администратора.");
+                    Console.ResetColor();
+                    Console.Error.WriteLine("Запустите оболочку от имени администратора или используйте флаг --elevate для запуска в новом окне.");
+
+                    return ExitCode.AccessDenied;
+                }
+                else
+                {
+                    // Либо запуск из проводника, либо задан флаг --elevate в консоли
+                    try
+                    {
+                        var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+                        var startInfo = new ProcessStartInfo(exePath!)
+                        {
+                            UseShellExecute = true,
+                            Verb = "runas", // Вызов UAC
+                        };
+
+                        if (args.Length > 0)
+                        {
+                            // Передаем только имена процессов
+                            startInfo.Arguments = string.Join(" ", filteredArgs);
+                        }
+
+                        Process.Start(startInfo);
+
+                        return ExitCode.Success;
+                    }
+                    catch
+                    {
+                        Console.WriteLine("Для работы программы необходимы права администратора.");
+                        ConsoleHelper.WaitForKeysBeforeExit();
+                        return ExitCode.AccessDenied;
+                    }
+                }
             }
 
             // 2. Получение списка процессов
-            HashSet<string>? targetProcesses = GetTargetProcesses(args);
+            HashSet<string>? targetProcesses = GetTargetProcesses(filteredArgs);
             if (targetProcesses == null || targetProcesses.Count == 0)
             {
                 ConsoleHelper.WaitForKeysBeforeExit();
-                return;
+                return ExitCode.BadArguments;
             }
 
             // 3. Запуск мониторинга
@@ -49,6 +90,7 @@ namespace NetTracker
 
             // Добавление паузы перед закрытием окна при самостоятельном запуске
             ConsoleHelper.WaitForKeysBeforeExit();
+            return ExitCode.Success;
         }
 
         /// <summary>
