@@ -11,55 +11,17 @@ namespace NetTracker
         /// <param name="args">Аргументы запуска.</param>
         static int Main(string[] args)
         {
-            // Список аргументов без нашего служебного флага
+            // 1. Предварительный разбор аргументов
             var filteredArgs = args.Where(arg => arg != "--elevate" && arg != "-e").ToArray();
             bool forceElevate = args.Length != filteredArgs.Length;
 
-            // 1. Проверка прав
+            // 2. Проверка и обработка прав администратора
             if (!TraceEventSession.IsElevated() ?? false)
             {
-                // Если запуск из оболочки И НЕ задан флаг принудительного повышения
-                if (ConsoleHelper.IsLaunchedFromShell() && !forceElevate)
-                {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.Error.WriteLine("Ошибка: Для работы NetTracker требуются права администратора.");
-                    Console.ResetColor();
-                    Console.Error.WriteLine("Запустите оболочку от имени администратора или используйте флаг --elevate для запуска в новом окне.");
-
-                    return ExitCode.AccessDenied;
-                }
-                else
-                {
-                    // Либо запуск из проводника, либо задан флаг --elevate в консоли
-                    try
-                    {
-                        var exePath = Process.GetCurrentProcess().MainModule?.FileName;
-                        var startInfo = new ProcessStartInfo(exePath!)
-                        {
-                            UseShellExecute = true,
-                            Verb = "runas", // Вызов UAC
-                        };
-
-                        if (args.Length > 0)
-                        {
-                            // Передаем только имена процессов
-                            startInfo.Arguments = string.Join(" ", filteredArgs);
-                        }
-
-                        Process.Start(startInfo);
-
-                        return ExitCode.Success;
-                    }
-                    catch
-                    {
-                        Console.WriteLine("Для работы программы необходимы права администратора.");
-                        ConsoleHelper.WaitForKeysBeforeExit();
-                        return ExitCode.AccessDenied;
-                    }
-                }
+                return HandleElevation(filteredArgs, forceElevate);
             }
 
-            // 2. Получение списка процессов
+            // 3. Получение списка процессов для мониторинга
             HashSet<string>? targetProcesses = GetTargetProcesses(filteredArgs);
             if (targetProcesses == null || targetProcesses.Count == 0)
             {
@@ -67,30 +29,62 @@ namespace NetTracker
                 return ExitCode.BadArguments;
             }
 
-            // 3. Запуск мониторинга
-            Console.WriteLine($"\nОжидание сетевой активности от: {string.Join(", ", targetProcesses)}...");
-            Console.WriteLine("Нажмите Ctrl+C для завершения...\n");
+            // 4. Запуск основного цикла мониторинга
+            RunMonitoring(targetProcesses);
 
-            Console.WriteLine($"{"Время",-12} | {"IP-адрес",-15} | {"Порт",-5} | {"DNS-имя (Домен)"}");
-            Console.WriteLine(new string('-', 80));
-
-            using (var monitor = new NetworkMonitor(targetProcesses))
-            {
-                // Обработка Ctrl+C
-                Console.CancelKeyPress += (sender, e) =>
-                {
-                    e.Cancel = true; // Предотвращаем жесткое закрытие
-                    monitor.Stop();
-                };
-
-                // Запускаем сбор
-                // Блокирующий вызов - работает пока не вызовут Stop()
-                monitor.Start();
-            }
-
-            // Добавление паузы перед закрытием окна при самостоятельном запуске
             ConsoleHelper.WaitForKeysBeforeExit();
             return ExitCode.Success;
+        }
+
+        /// <summary>
+        /// Обрабатывает логику повышения привилегий (UAC) в зависимости от контекста запуска.
+        /// </summary>
+        private static int HandleElevation(string[] args, bool forceElevate)
+        {
+            if (ConsoleHelper.IsLaunchedFromShell() && !forceElevate)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.Error.WriteLine("Ошибка: Для работы NetTracker требуются права администратора.");
+                Console.ResetColor();
+                Console.Error.WriteLine("Запустите оболочку от имени администратора или используйте флаг --elevate (-e) для запуска в новом окне.");
+                return ExitCode.AccessDenied;
+            }
+
+            try
+            {
+                string? exePath = Process.GetCurrentProcess().MainModule?.FileName;
+                string argsString = string.Join(" ", args);
+                string? shellName = ConsoleHelper.GetParentShellName();
+
+                ProcessStartInfo startInfo = new ProcessStartInfo
+                {
+                    UseShellExecute = true,
+                    Verb = "runas"
+                };
+
+                if (shellName != null)
+                {
+                    startInfo.FileName = shellName;
+                    if (ConsoleHelper.IsPowerShell(shellName))
+                        startInfo.Arguments = $"-NoExit -Command \"& '{exePath}' {argsString}\"";
+                    else
+                        startInfo.Arguments = $"/K \"\"{exePath}\" {argsString}\"";
+                }
+                else
+                {
+                    startInfo.FileName = exePath!;
+                    startInfo.Arguments = argsString;
+                }
+
+                Process.Start(startInfo);
+                return ExitCode.ElevatedRelaunch;
+            }
+            catch
+            {
+                Console.WriteLine("Для работы программы необходимы права администратора.");
+                ConsoleHelper.WaitForKeysBeforeExit();
+                return ExitCode.AccessDenied;
+            }
         }
 
         /// <summary>
@@ -128,6 +122,29 @@ namespace NetTracker
             }
 
             return processes;
+        }
+
+        /// <summary>
+        /// Выполняет настройку интерфейса и запускает объект монитора.
+        /// </summary>
+        private static void RunMonitoring(HashSet<string> targetProcesses)
+        {
+            Console.WriteLine($"\nОжидание сетевой активности от: {string.Join(", ", targetProcesses)}...");
+            Console.WriteLine("Нажмите Ctrl+C для завершения...\n");
+
+            Console.WriteLine($"{"Время",-14} | {"IP-адрес",-15} | {"Порт",-5} | {"DNS-имя (Домен)"}");
+            Console.WriteLine(new string('-', 90));
+
+            using (var monitor = new NetworkMonitor(targetProcesses))
+            {
+                Console.CancelKeyPress += (sender, e) =>
+                {
+                    e.Cancel = true;
+                    monitor.Stop();
+                };
+
+                monitor.Start();
+            }
         }
     }
 }

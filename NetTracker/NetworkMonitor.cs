@@ -179,8 +179,8 @@ namespace NetTracker
                     ? mappedDomain
                     : UnknownDomainText;
 
-                string time = data.TimeStamp.ToString("HH:mm:ss");
-                Console.WriteLine($"[{time}] | {destIp,-15} | {data.dport,-5} | {domain}");
+                string time = $"[{data.TimeStamp:HH:mm:ss.fff}]";
+                Console.WriteLine($"{time,-14} | {destIp,-15} | {data.dport,-5} | {domain}");
             };
         }
 
