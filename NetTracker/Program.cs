@@ -1,150 +1,91 @@
-﻿using Microsoft.Diagnostics.Tracing.Parsers;
-using Microsoft.Diagnostics.Tracing.Session;
-using System.Collections.Concurrent;
-using System.Text.RegularExpressions;
+﻿using Microsoft.Diagnostics.Tracing.Session;
 
 namespace NetTracker
 {
     internal class Program
     {
-        private const string SessionName = "frolbel.NetTracker.Session";
-
-        // Словарь для хранения связок: [IP-адрес] -> [Настоящее DNS имя]
-        static ConcurrentDictionary<string, string> IpToDomainMap = new();
-
+        /// <summary>
+        /// Точка входа.
+        /// </summary>
+        /// <param name="args">Аргументы запуска.</param>
         static void Main(string[] args)
         {
-            if (!(TraceEventSession.IsElevated() ?? false))
+            // 1. Проверка прав
+            if (!TraceEventSession.IsElevated() ?? false)
             {
-                Console.WriteLine("Ошибка: Пожалуйста, запустите консоль от имени Администратора.");
+                Console.WriteLine("Пожалуйста, запустите программу от имени администратора.");
+                ConsoleHelper.WaitForKeysBeforeExit();
                 return;
             }
 
-            // Очистка старых сессий, если они остались
-            var activeSessions = TraceEventSession.GetActiveSessionNames();    
-            foreach (var name in activeSessions)    
-            {        
-                if (name == SessionName)        
-                {            
-                    var session = TraceEventSession.GetActiveSession(name);
-                    session?.Dispose();        
-                }    
-            }
-
-            var input = "";
-            if (args.Length > 0)
+            // 2. Получение списка процессов
+            HashSet<string>? targetProcesses = GetTargetProcesses(args);
+            if (targetProcesses == null || targetProcesses.Count == 0)
             {
-                // Соединяем все аргументы в одну строку
-                input = string.Join(" ", args);        
-            }        
-            else        
-            {            
-                Console.Write("Введите имена процессов (через пробел или запятую, например: telegram chrome): ");
-                input = Console.ReadLine()?.Trim();
-            } 
-            
-            if (string.IsNullOrWhiteSpace(input)) 
-            { 
-                Console.WriteLine("Имя процесса не может быть пустым. Нажмите любую клавишу для выхода..."); 
-                Console.ReadKey(true); 
-                return; 
+                ConsoleHelper.WaitForKeysBeforeExit();
+                return;
             }
 
-            // Разбиваем строку на массив имен, убираем .exe и переводим в нижний регистр
-            var targetProcessNames = new HashSet<string>(
-                input.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries)
-                .Select(p => p.ToLower().Replace(".exe", ""))        
-            );
-
-            if (targetProcessNames.Count == 0) 
-            { 
-                Console.WriteLine("Не удалось распознать имена процессов. Нажмите любую клавишу для выхода..."); 
-                Console.ReadKey(true); 
-                return; 
-            }
-
-            var uniqueIPs = new HashSet<string>();
-
-            var processNamesDisplay = string.Join(", ", targetProcessNames);
-            Console.WriteLine($"\nОжидание сетевой активности от: {processNamesDisplay}...");
-            
+            // 3. Запуск мониторинга
+            Console.WriteLine($"\nОжидание сетевой активности от: {string.Join(", ", targetProcesses)}...");
             Console.WriteLine("Нажмите Ctrl+C для завершения...\n");
-            Console.WriteLine($"{"Время",-10} | {"IP-адрес",-15} | {"Порт",-5} | DNS-имя (Домен)");
-            Console.WriteLine(new string('-', 65));
 
-            using (var session = new TraceEventSession("MyNetTrackerSession"))
+            Console.WriteLine($"{"Время",-12} | {"IP-адрес",-15} | {"Порт",-5} | {"DNS-имя (Домен)"}");
+            Console.WriteLine(new string('-', 80));
+
+            using (var monitor = new NetworkMonitor(targetProcesses))
             {
-                session.EnableKernelProvider(KernelTraceEventParser.Keywords.NetworkTCPIP);
-
-                // Включаем прослушивание DNS-запросов Windows
-                session.EnableProvider("Microsoft-Windows-DNS-Client");
-
-                // Обработчик всех динамических событий (в т.ч. DNS)
-                session.Source.Dynamic.All += (data) =>
+                // Обработка Ctrl+C
+                Console.CancelKeyPress += (sender, e) =>
                 {
-                    if (data.ProviderName == "Microsoft-Windows-DNS-Client")
-                    {
-                        try
-                        {
-                            // Извлекаем имя домена и результаты из системного события DNS
-                            var domain = data.PayloadByName("QueryName") as string;
-                            var results = data.PayloadByName("QueryResults") as string;
-
-                            // Извлекаем все IPv4 из ответа с помощью регулярного выражения
-                            if (!string.IsNullOrEmpty(domain) && !string.IsNullOrEmpty(results))
-                            {
-                                var ipMatches = Regex.Matches(results, @"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b");
-                                foreach (Match match in ipMatches)
-                                {
-                                    IpToDomainMap[match.Value] = domain;
-                                }
-                            }
-                        }
-                        catch { }
-                    }
-                };
-
-                // Обработчик TCP-подключений
-                session.Source.Kernel.TcpIpConnect += (data) =>
-                {
-                    var processName = data.ProcessName;
-
-                    if (string.IsNullOrEmpty(processName) || !targetProcessNames.Contains(processName.ToLower()))
-                    {
-                        return;
-                    }
-
-                    var ipAddress = data.daddr.ToString();
-
-                    if (uniqueIPs.Add(ipAddress))
-                    {
-                        var domainName = "Неизвестный домен (прямой IP)";
-                        if (IpToDomainMap.TryGetValue(ipAddress, out string? mappedDomain))
-                        {
-                            if (!string.IsNullOrEmpty(mappedDomain))
-                            {
-                                domainName = mappedDomain;
-                            }
-                        }
-
-                        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] | {ipAddress,-15} | {data.dport,-5} | {domainName}");
-                    }
-                };
-
-                Console.CancelKeyPress += (s, e) =>
-                {
-                    session.Dispose();
-                    e.Cancel = true;
+                    e.Cancel = true; // Предотвращаем жесткое закрытие
+                    monitor.Stop();
                 };
 
                 // Запускаем сбор
-                session.Source.Process();
+                // Блокирующий вызов - работает пока не вызовут Stop()
+                monitor.Start();
             }
 
-            Console.WriteLine("\nСбор данных завершен.");
-
-            // Добавляем паузу перед закрытием окна
+            // Добавление паузы перед закрытием окна при самостоятельном запуске
             ConsoleHelper.WaitForKeysBeforeExit();
+        }
+
+        /// <summary>
+        /// Вспомогательный метод парсинга ввода.
+        /// </summary>
+        /// <param name="args">Аргументы запуска.</param>
+        /// <returns>Коллекция имен процессов (без .exe) для фильтрации трафика.</returns>
+        private static HashSet<string>? GetTargetProcesses(string[] args)
+        {
+            // Соединяем все аргументы в одну строку
+            var input = args.Length > 0 ? string.Join(" ", args) : null;
+
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                Console.Write("Введите имена процессов (через пробел или запятую): ");
+                input = Console.ReadLine()?.Trim();
+            }
+
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                Console.WriteLine("Имя процесса не может быть пустым.");
+                return null;
+            }
+
+            // Разбиваем строку на коллекцию имен процессов, убирая .exe и переводя в нижний регистр
+            var processes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var p in input.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries))
+            {
+                processes.Add(p.Replace(".exe", ""));
+            }
+
+            if (processes.Count == 0)
+            {
+                Console.WriteLine("Не удалось распознать имена процессов.");
+            }
+
+            return processes;
         }
     }
 }
