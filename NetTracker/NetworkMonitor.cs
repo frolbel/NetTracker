@@ -20,7 +20,7 @@ namespace NetTracker
         /// <remarks>
         /// Используется для перехвата "живых" результатов резолвинга DNS-имен.
         /// </remarks>
-        private const string DnsProviderName = "Microsoft-Windows-DNS-Client";
+        public const string DnsProviderName = "Microsoft-Windows-DNS-Client";
 
         /// <summary>
         /// Глобальное уникальное имя сессии ETW на уровне операционной системы Windows.
@@ -28,13 +28,13 @@ namespace NetTracker
         /// <remarks>
         /// Используется для создания новой сессии и поиска зависших (stale) старых сессий.
         /// </remarks>
-        private const string SessionName = "frolbel.NetTracker.Session";
+        public const string SessionName = "frolbel.NetTracker.Session";
 
         /// <summary>        
         /// Текст, который отображается, если для перехваченного IP-адреса 
         /// не было найдено соответствующего DNS-запроса.
         /// </summary>        
-        private const string UnknownDomainText = "Неизвестный домен (прямой IP)";
+        public const string UnknownDomainText = "Неизвестный домен (прямой IP)";
 
         /// <summary>
         /// Коллекция имен процессов (без расширения .exe), сетевую активность которых необходимо отслеживать.
@@ -43,6 +43,14 @@ namespace NetTracker
         /// Использование HashSet обеспечивает максимально быструю фильтрацию (O(1)) при обработке событий.
         /// </remarks>
         private readonly HashSet<string> _targetProcesses;
+
+        /// <summary>
+        /// Хронологический список перехваченных соединений.
+        /// </summary>
+        /// <remarks>
+        /// Заполняется только если _capturedRecords != null.
+        /// </remarks>
+        private readonly IList<NetworkRecord>? _capturedRecords;
 
         /// <summary>
         /// Словарь для хранения связок: [IP-адрес] -> [Настоящее DNS имя]
@@ -57,14 +65,17 @@ namespace NetTracker
         /// </remarks>
         private TraceEventSession? _session;
 
+
         /// <summary>
         /// Инициализирует новый экземпляр класса <see cref="NetworkMonitor"/>.
         /// </summary>
         /// <param name="targetProcesses">Коллекция имен процессов (без .exe) для фильтрации трафика.</param>
-        public NetworkMonitor(HashSet<string> targetProcesses)
+        /// <param name="capturedRecords">Хронологический список перехваченных соединений.</param>
+        public NetworkMonitor(HashSet<string> targetProcesses, IList<NetworkRecord>? capturedRecords)
         {
             _session = null;
             _targetProcesses = targetProcesses;
+            _capturedRecords = capturedRecords;
             _ipToDomainMap = new ConcurrentDictionary<string, string>();
             CleanupStaleSessions();
         }
@@ -181,6 +192,11 @@ namespace NetTracker
 
                 string time = $"[{data.TimeStamp:HH:mm:ss.fff}]";
                 Console.WriteLine($"{time,-14} | {destIp,-15} | {data.dport,-5} | {domain}");
+                
+                if (_capturedRecords != null) 
+                { 
+                    _capturedRecords.Add(new NetworkRecord(data.TimeStamp, destIp, data.dport, domain)); 
+                }
             };
         }
 
