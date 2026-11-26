@@ -1,5 +1,6 @@
 ﻿using Microsoft.Diagnostics.Tracing.Session;
 using System.Diagnostics;
+using System.Threading;
 
 namespace NetTracker
 {
@@ -25,6 +26,8 @@ namespace NetTracker
             string? outPath = null;
             var outType = ExportFormat.Raw;
             var processArgs = new List<string>();
+            string? statsPath = null;
+            bool printStatsToConsole = false;
 
             foreach (var arg in filteredArgs)
             {
@@ -50,6 +53,14 @@ namespace NetTracker
                         outType = ExportFormat.Raw;
                     }
                 }
+                else if (arg.StartsWith("--stats=", StringComparison.OrdinalIgnoreCase)) 
+                { 
+                    statsPath = arg.Substring(8).Trim('"', '\''); 
+                }
+                else if (arg.Equals("--stats", StringComparison.OrdinalIgnoreCase)) 
+                { 
+                    printStatsToConsole = true; 
+                }
                 else
                 {
                     processArgs.Add(arg);
@@ -65,17 +76,59 @@ namespace NetTracker
             }
 
             // 5. Запуск основного цикла мониторинга
-            List<NetworkRecord>? capturedRecords = string.IsNullOrWhiteSpace(outPath) ? null : new();
+
+            // Предположение того, что не надо включать захват пакетов в память
+            List<NetworkRecord>? capturedRecords = null;
+
+            // Если запрошен экспорт ИЛИ статистика, нужно включить захват пакетов в память
+            if (!string.IsNullOrWhiteSpace(outPath) || printStatsToConsole || !string.IsNullOrWhiteSpace(statsPath))
+            {
+                capturedRecords = new();
+            }
+
             RunMonitoring(targetProcesses, capturedRecords);
 
             Console.WriteLine("\nСбор данных завершен.");
 
-            if (!string.IsNullOrWhiteSpace(outPath)) 
+            if (capturedRecords != null && !string.IsNullOrWhiteSpace(outPath)) 
             { 
-                DataExporter.Export(capturedRecords!, outPath, outType); 
+                DataExporter.Export(capturedRecords, outPath, outType); 
             }
 
+            if (capturedRecords != null && (printStatsToConsole || !string.IsNullOrWhiteSpace(statsPath)))
+            {
+                var report = StatisticsGenerator.GenerateReport(capturedRecords);
+
+                if (printStatsToConsole)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine(report);
+                }
+                if (!string.IsNullOrWhiteSpace(statsPath))
+                {
+                    try
+                    {
+                        var dir = Path.GetDirectoryName(statsPath);
+                        
+                        if (!string.IsNullOrWhiteSpace(dir)) 
+                        {
+                            Directory.CreateDirectory(dir); 
+                        }
+
+                        File.WriteAllText(statsPath, report, System.Text.Encoding.UTF8);
+                        Console.WriteLine($"\n[Статистика] Сохранена в файл: {statsPath}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.Error.WriteLine($"\n[Ошибка] Не удалось сохранить статистику: {ex.Message}");
+                        Console.ResetColor();
+                    }
+                }
+            }    
+
             ConsoleHelper.WaitForKeysBeforeExit();
+
             return ExitCode.Success;
         }
 
