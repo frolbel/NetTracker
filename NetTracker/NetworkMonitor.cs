@@ -190,8 +190,7 @@ namespace NetTracker
                     ? mappedDomain
                     : UnknownDomainText;
 
-                string time = $"[{data.TimeStamp:HH:mm:ss.fff}]";
-                Console.WriteLine($"{time,-14} | {destIp,-15} | {data.dport,-5} | {domain}");
+                AppLogger.Capture(OutputFormatter.FormatRecord(data.TimeStamp, destIp, data.dport, domain));
                 
                 if (_capturedRecords != null) 
                 { 

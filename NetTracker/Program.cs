@@ -1,5 +1,6 @@
 ﻿using Microsoft.Diagnostics.Tracing.Session;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using System.Threading;
 
 namespace NetTracker
@@ -12,26 +13,34 @@ namespace NetTracker
         /// <param name="args">Аргументы запуска утилиты.</param>
         static int Main(string[] args)
         {
-            // 1. Предварительный разбор аргументов запуска утилиты.
-            var filteredArgs = args.Where(arg => arg != "--elevate" && arg != "-e").ToArray();
-            bool forceElevate = args.Length != filteredArgs.Length;
+            // 1. Разбор аргументов запуска утилиты.
+            bool forceElevate = false;
+            
 
-            // 2. Проверка и обработка прав администратора.
-            if (!TraceEventSession.IsElevated() ?? false)
-            {
-                return HandleElevation(filteredArgs, forceElevate);
-            }
-
-            // 3. Разбор запуска утилиты.
+            string? inPath = null;
             string? outPath = null;
-            var outType = ExportFormat.Raw;
+
+            string? explicitTypeStr = null; 
+            var outType = ExportFormat.Csv;
+            
             var processArgs = new List<string>();
             string? statsPath = null;
             bool printStatsToConsole = false;
 
-            foreach (var arg in filteredArgs)
+            foreach (var arg in args)
             {
-                if (arg.StartsWith("--out=", StringComparison.OrdinalIgnoreCase))
+                if (arg.StartsWith("--elevate", StringComparison.OrdinalIgnoreCase) || arg.StartsWith("-e", StringComparison.OrdinalIgnoreCase))
+                {
+                    forceElevate = true;
+                }
+                else if (arg.StartsWith("--in=", StringComparison.OrdinalIgnoreCase))
+                {
+                    inPath = arg.Substring(5).Trim('"', '\'');
+                }
+                else if (arg.StartsWith("-i=", StringComparison.OrdinalIgnoreCase))
+                {
+                    inPath = arg.Substring(3).Trim('"', '\'');
+                }else if(arg.StartsWith("--out=", StringComparison.OrdinalIgnoreCase))
                 {
                     outPath = arg.Substring(6).Trim('"', '\'');
                 }
@@ -42,24 +51,29 @@ namespace NetTracker
                 else if (arg.StartsWith("--type=", StringComparison.OrdinalIgnoreCase) || arg.StartsWith("-t=", StringComparison.OrdinalIgnoreCase))
                 {
                     // Извлекаем значение после '='
-                    var typeStr = arg.Substring(arg.IndexOf('=') + 1).Trim('"', '\'');
-
-                    // Пытаемся безопасно спарсить строку в Enum (true означает игнорирование регистра)
-                    if (!Enum.TryParse<ExportFormat>(typeStr, true, out outType))
+                    // определение формата см. ниже
+                    explicitTypeStr = arg.Substring(arg.IndexOf('=') + 1).Trim('"', '\'');
+                }
+                else if (arg.StartsWith("--stats=", StringComparison.OrdinalIgnoreCase))
+                {
+                    statsPath = arg.Substring(8).Trim('"', '\'');
+                }
+                else if (arg.Equals("--stats", StringComparison.OrdinalIgnoreCase))
+                {
+                    printStatsToConsole = true;
+                }
+                else if (arg.StartsWith("--loglevel=", StringComparison.OrdinalIgnoreCase) || arg.StartsWith("-l=", StringComparison.OrdinalIgnoreCase))
+                {
+                    var levelStr = arg.Substring(arg.IndexOf('=') + 1).Trim('"', '\'');
+                    if (Enum.TryParse<LogLevel>(levelStr, true, out var level) ||
+                        (int.TryParse(levelStr, out int levelInt) && Enum.IsDefined(typeof(LogLevel), levelInt)))
                     {
-                        Console.ForegroundColor = ConsoleColor.Yellow;
-                        Console.WriteLine($"\n[Warning] Неизвестный формат экспорта '{typeStr}'. Будет использован формат по умолчанию (Raw).");
-                        Console.ResetColor();
-                        outType = ExportFormat.Raw;
+                        AppLogger.CurrentLevel = (LogLevel)Enum.Parse(typeof(LogLevel), levelStr, true);
                     }
-                }
-                else if (arg.StartsWith("--stats=", StringComparison.OrdinalIgnoreCase)) 
-                { 
-                    statsPath = arg.Substring(8).Trim('"', '\''); 
-                }
-                else if (arg.Equals("--stats", StringComparison.OrdinalIgnoreCase)) 
-                { 
-                    printStatsToConsole = true; 
+                    else
+                    {
+                        AppLogger.Warning($"\n[Warning] Неизвестный уровень логирования '{levelStr}'. Используется по умолчанию (Debug).");
+                    }
                 }
                 else
                 {
@@ -67,7 +81,97 @@ namespace NetTracker
                 }
             }
 
-            // 4. Получение списка процессов для мониторинга
+            // Учет --stats с одобрения --loglevel
+            printStatsToConsole = printStatsToConsole && (AppLogger.CurrentLevel >= LogLevel.Statistics);
+
+            // === ОБРАБОТКА ШАБЛОНОВ И ОПРЕДЕЛЕНИЕ ФОРМАТА ЭКСПОРТА ===
+            if (!string.IsNullOrWhiteSpace(outPath))
+            {
+                // 1. Применяем умный парсер шаблонов с поддержкой %date и %time
+                outPath = ProcessPathTemplate(outPath);
+
+                // 2. Автоматическое определение формата по расширению (наивысший приоритет)
+                var ext = System.IO.Path.GetExtension(outPath).ToLowerInvariant();
+                if (ext == ".json") outType = ExportFormat.Json;
+                else if (ext == ".csv") outType = ExportFormat.Csv;
+                else if (ext == ".raw") outType = ExportFormat.Raw;
+                else
+                {
+                    // 3. Если расширение неизвестно, проверяем явный флаг --type
+                    if (!string.IsNullOrWhiteSpace(explicitTypeStr))
+                    {
+                        if (!Enum.TryParse<ExportFormat>(explicitTypeStr, true, out outType))
+                        {
+                            AppLogger.Warning($"\n[Warning] Неизвестный формат экспорта '{explicitTypeStr}'. Будет использован формат по умолчанию (Host).");
+                            outType = ExportFormat.Host;
+                        }
+                    }
+                }
+            }
+
+            // Применяем парсер шаблонов и к статистике
+            if (!string.IsNullOrWhiteSpace(statsPath))
+            {
+                statsPath = ProcessPathTemplate(statsPath);
+            }
+
+            // 2.1 ОФФЛАЙН РЕЖИМ: Если указан файл для импорта, ETW мониторинг не запускаем
+            if (!string.IsNullOrWhiteSpace(inPath))
+            {
+                try 
+                {
+                    AppLogger.Info($"[Импорт] Загрузка данных из {inPath}...");
+                    var records = DataImporter.Import(inPath);
+                    AppLogger.Info($"[Импорт] Загружено записей: {records.Count}");
+
+                    // Выводим данные на экран (формат совпадает с реал-тайм мониторингом)
+                    AppLogger.Capture(string.Empty);
+                    AppLogger.Capture(OutputFormatter.GetHeader());
+                    AppLogger.Capture(OutputFormatter.GetSeparator());
+                    foreach ( var record in records )
+                    {
+                        AppLogger.Capture(OutputFormatter.FormatRecord(record));
+                    }
+                    AppLogger.Capture(OutputFormatter.GetSeparator());
+
+                    if (!string.IsNullOrWhiteSpace(outPath))
+                    {
+                        DataExporter.Export(records, outPath, outType);
+                    }
+
+                    if (printStatsToConsole || !string.IsNullOrWhiteSpace(statsPath))
+                    {
+                        var report = StatisticsGenerator.GenerateReport(records);
+                        if (printStatsToConsole)
+                        {
+                            AppLogger.Statistics("\n" + report);
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(statsPath))
+                        {
+                            var dir = Path.GetDirectoryName(statsPath);
+                            if (!string.IsNullOrWhiteSpace(dir)) Directory.CreateDirectory(dir);
+                            File.WriteAllText(statsPath, report, System.Text.Encoding.UTF8);
+                            AppLogger.Info($"\n[Статистика] Сохранена в файл: {statsPath}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Error($"\n[Ошибка импорта] {ex.Message}");
+                }
+
+                ConsoleHelper.WaitForKeysBeforeExit();
+                return ExitCode.Success;
+            }
+
+            // 2.2. Проверка и обработка прав администратора.
+            if (!TraceEventSession.IsElevated() ?? false)
+            {
+                return HandleElevation(args, forceElevate);
+            }
+
+            // 3. Получение списка процессов для мониторинга
             HashSet<string>? targetProcesses = GetTargetProcesses(processArgs);
             if (targetProcesses == null || targetProcesses.Count == 0)
             {
@@ -75,7 +179,7 @@ namespace NetTracker
                 return ExitCode.BadArguments;
             }
 
-            // 5. Запуск основного цикла мониторинга
+            // 4. Запуск основного цикла мониторинга
 
             // Предположение того, что не надо включать захват пакетов в память
             List<NetworkRecord>? capturedRecords = null;
@@ -88,7 +192,7 @@ namespace NetTracker
 
             RunMonitoring(targetProcesses, capturedRecords);
 
-            Console.WriteLine("\nСбор данных завершен.");
+            AppLogger.Info("\nСбор данных завершен.");
 
             if (capturedRecords != null && !string.IsNullOrWhiteSpace(outPath)) 
             { 
@@ -101,8 +205,7 @@ namespace NetTracker
 
                 if (printStatsToConsole)
                 {
-                    Console.WriteLine();
-                    Console.WriteLine(report);
+                    AppLogger.Statistics(report);
                 }
                 if (!string.IsNullOrWhiteSpace(statsPath))
                 {
@@ -116,13 +219,11 @@ namespace NetTracker
                         }
 
                         File.WriteAllText(statsPath, report, System.Text.Encoding.UTF8);
-                        Console.WriteLine($"\n[Статистика] Сохранена в файл: {statsPath}");
+                        AppLogger.Info($"\n[Статистика] Сохранена в файл: {statsPath}");
                     }
                     catch (Exception ex)
                     {
-                        Console.ForegroundColor = ConsoleColor.Red;
-                        Console.Error.WriteLine($"\n[Ошибка] Не удалось сохранить статистику: {ex.Message}");
-                        Console.ResetColor();
+                        AppLogger.Error($"\n[Ошибка] Не удалось сохранить статистику: {ex.Message}");
                     }
                 }
             }    
@@ -142,18 +243,17 @@ namespace NetTracker
         {
             if (ConsoleHelper.IsLaunchedFromShell() && !forceElevate)
             {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.Error.WriteLine("Ошибка: Для работы NetTracker требуются права администратора.");
-                Console.ResetColor();
-                Console.Error.WriteLine("Запустите оболочку от имени администратора или используйте флаг --elevate (-e) для запуска в новом окне.");
+                AppLogger.Error("Ошибка: Для работы NetTracker требуются права администратора.");
+                AppLogger.Warning("Запустите оболочку от имени администратора или используйте флаг --elevate (-e) для запуска в новом окне.");
                 return ExitCode.AccessDenied;
             }
 
             try
             {
-                string? exePath = Process.GetCurrentProcess().MainModule?.FileName;
-                string argsString = string.Join(" ", args);
-                string? shellName = ConsoleHelper.GetParentShellName();
+                var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+                var filteredArgs = args.Where(arg => arg != "--elevate" && arg != "-e").ToArray();
+                var argsString = string.Join(" ", filteredArgs);
+                var shellName = ConsoleHelper.GetParentShellName();
 
                 ProcessStartInfo startInfo = new ProcessStartInfo
                 {
@@ -180,7 +280,7 @@ namespace NetTracker
             }
             catch
             {
-                Console.WriteLine("Для работы программы необходимы права администратора.");
+                AppLogger.Warning("Для работы программы необходимы права администратора.");
                 ConsoleHelper.WaitForKeysBeforeExit();
                 return ExitCode.AccessDenied;
             }
@@ -204,7 +304,7 @@ namespace NetTracker
 
             if (string.IsNullOrWhiteSpace(input))
             {
-                Console.WriteLine("Имя процесса не может быть пустым.");
+                AppLogger.Warning("Имя процесса не может быть пустым.");
                 return null;
             }
 
@@ -217,7 +317,7 @@ namespace NetTracker
 
             if (processes.Count == 0)
             {
-                Console.WriteLine("Не удалось распознать имена процессов.");
+                AppLogger.Warning("Не удалось распознать имена процессов.");
             }
 
             return processes;
@@ -233,11 +333,11 @@ namespace NetTracker
         /// </param>
         private static void RunMonitoring(HashSet<string> targetProcesses, IList<NetworkRecord>? capturedRecords)
         {
-            Console.WriteLine($"\nОжидание сетевой активности от: {string.Join(", ", targetProcesses)}...");
-            Console.WriteLine("Нажмите Ctrl+C для завершения...\n");
+            AppLogger.Info($"\nОжидание сетевой активности от: {string.Join(", ", targetProcesses)}...");
+            AppLogger.Info("Нажмите Ctrl+C для завершения...\n");
 
-            Console.WriteLine($"{"Время",-14} | {"IP-адрес",-15} | {"Порт",-5} | {"DNS-имя (Домен)"}");
-            Console.WriteLine(new string('-', 90));
+            AppLogger.Capture(OutputFormatter.GetHeader());
+            AppLogger.Capture(OutputFormatter.GetSeparator());
 
             using (var monitor = new NetworkMonitor(targetProcesses, capturedRecords))
             {
@@ -249,6 +349,46 @@ namespace NetTracker
 
                 monitor.Start();
             }
+        }
+
+        /// <summary>
+        /// Обрабатывает строку пути, заменяя шаблоны в фигурных скобках <c>{...}</c> на текущие дату и время.
+        /// </summary>
+        /// <param name="path">Исходный путь к файлу (например, <c>.\result_{%date_%time}.csv</c>).</param>
+        /// <returns>
+        /// Готовая строка пути с подставленными значениями (например, <c>.\result_2026-11-26_151106.csv</c>).
+        /// </returns>
+        /// <remarks>
+        /// Поддерживаемые лексемы внутри скобок: <c>%date</c> и <c>%time</c>. 
+        /// После лексемы можно указать формат через двоеточие (например, <c>{%date:yyyy.MM.dd_%time:HH-mm}</c>).
+        /// Если формат не указан, по умолчанию используются <c>yyyy-MM-dd</c> для даты и <c>HHmmss</c> для времени.
+        /// </remarks>
+        private static string ProcessPathTemplate(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return path;
+
+            // 1. Ищем всё, что заключено между { и }
+            return Regex.Replace(path, @"\{([^}]+)\}", match =>
+            {
+                var template = match.Groups[1].Value;
+                DateTime now = DateTime.Now;
+
+                // 2. Внутри шаблона ищем %date и %time с опциональным форматом
+                // Шаблон: %(date|time) затем опционально ':' и набор букв/дефисов/точек
+                return Regex.Replace(template, @"%(date|time)(?::([a-zA-Z\-.]+))?", tokenMatch =>
+                {
+                    var type = tokenMatch.Groups[1].Value.ToLowerInvariant();
+                    // Если формат указан (после ':'), берем его, иначе null
+                    var format = tokenMatch.Groups[2].Success ? tokenMatch.Groups[2].Value : null;
+
+                    if (type == "date")
+                        return now.ToString(string.IsNullOrEmpty(format) ? "yyyy-MM-dd" : format);
+                    if (type == "time")
+                        return now.ToString(string.IsNullOrEmpty(format) ? "HHmmss" : format);
+
+                    return tokenMatch.Value;
+                });
+            });
         }
     }
 }
