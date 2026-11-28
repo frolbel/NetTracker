@@ -1,7 +1,6 @@
 ﻿using Microsoft.Diagnostics.Tracing.Session;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
-using System.Threading;
 
 namespace NetTracker
 {
@@ -77,7 +76,12 @@ namespace NetTracker
                 }
                 else
                 {
-                    processArgs.Add(arg);
+                    // Автоматически убираем путь (C:\...\...\) и расширение (.exe)
+                    var cleanName = Path.GetFileNameWithoutExtension(arg);
+                    if (!string.IsNullOrWhiteSpace(cleanName))
+                    {
+                        processArgs.Add(cleanName);
+                    }
                 }
             }
 
@@ -252,7 +256,7 @@ namespace NetTracker
             {
                 var exePath = Process.GetCurrentProcess().MainModule?.FileName;
                 var filteredArgs = args.Where(arg => arg != "--elevate" && arg != "-e").ToArray();
-                var argsString = string.Join(" ", filteredArgs);
+                var argsString = string.Join(" ", filteredArgs.Select(a => $"\"{a}\""));
                 var shellName = ConsoleHelper.GetParentShellName();
 
                 ProcessStartInfo startInfo = new ProcessStartInfo

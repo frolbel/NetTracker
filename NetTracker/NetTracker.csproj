@@ -10,14 +10,14 @@
 	<Title>NetTracker</Title>
 	<Authors>Alexander Belkin (frolbel)</Authors>
 	<Description>Real-time network activity monitor for specific Windows processes using ETW.</Description>
-	<Copyright>Copyright © 2026 Alexander Belkin (frolbel). All rights reserved.</Copyright>
+	<Copyright>Copyright © 2026 Alexander Belkin (frolbel)</Copyright>
 	<PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/frolbel/NetTracker</RepositoryUrl>
 
 	<!-- Версия приложения -->
-	<Version>1.2.1</Version>
-	<FileVersion>1.2.1</FileVersion>
-	<AssemblyVersion>1.2.1</AssemblyVersion>
+	<Version>1.3.0</Version>
+	<FileVersion>1.3.0</FileVersion>
+	<AssemblyVersion>1.3.0</AssemblyVersion>
 
 	<ApplicationManifest>app.manifest</ApplicationManifest>
   
